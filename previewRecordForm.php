@@ -4,6 +4,8 @@ namespace Vanderbilt\EmailTriggerExternalModule;
 use ExternalModules\AbstractExternalModule;
 use ExternalModules\ExternalModules;
 
+use PHPMailer\PHPMailer\PHPMailer;
+
 require_once __DIR__.'/vendor/autoload.php';
 
 $project_id = $_GET['pid'];
@@ -18,7 +20,7 @@ $email_subject =  empty($module->getProjectSetting('email-subject'))?array():$mo
 $email_text =  empty($module->getProjectSetting('email-text'))?array():$module->getProjectSetting('email-text')[$index];
 $datapipe_var = $module->getProjectSetting("datapipe_var", $project_id);
 
-$data = \REDCap::getData($project_id);
+$data = \REDCap::getData($project_id,"array",$record);
 
 if(empty($form_name_event)){
     if(array_key_exists('repeat_instances',$data[$record])){
@@ -34,7 +36,7 @@ if(empty($form_name_event)){
     }
 }
 
-$mail = new \PHPMailer;
+$mail = new PHPMailer;
 
 #Email Addresses
 $mail = $module->setEmailAddresses($mail, $project_id, $record, $form_name_event, $form_name, 1, $data, $index,\REDCap::isLongitudinal());
