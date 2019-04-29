@@ -3,10 +3,10 @@ namespace Vanderbilt\EmailTriggerExternalModule;
 
 use ExternalModules\AbstractExternalModule;
 use ExternalModules\ExternalModules;
+use PHPMailer\PHPMailer\PHPMailer;
 
 require_once APP_PATH_DOCROOT.'Classes/Files.php';
 require_once 'vendor/autoload.php';
-
 
 class EmailTriggerExternalModule extends AbstractExternalModule
 {
@@ -323,7 +323,7 @@ class EmailTriggerExternalModule extends AbstractExternalModule
      * @throws \Exception
      */
     function scheduledemails(){
-        $sql="SELECT s.project_id FROM redcap_external_modules m, redcap_external_module_settings s WHERE m.external_module_id = s.external_module_id AND s.value = 'true' AND m.directory_prefix = 'vanderbilt_emailTrigger' AND s.`key` = 'enabled'";
+        $sql="SELECT s.project_id FROM redcap_external_modules m, redcap_external_module_settings s WHERE m.external_module_id = s.external_module_id AND s.value = 'true' AND (m.directory_prefix = 'vanderbilt_emailTrigger' OR m.directory_prefix = 'email_alerts') AND s.`key` = 'enabled'";
         $q = $this->query($sql);
 
         if($error = db_error()){
@@ -332,25 +332,27 @@ class EmailTriggerExternalModule extends AbstractExternalModule
 
         while($row = db_fetch_assoc($q)){
             $project_id = $row['project_id'];
-            $email_queue =  $this->getProjectSetting('email-queue',$project_id);
-            $queue_aux = $email_queue;
-			if($email_queue != ''){
-                $email_sent_total = 0;
-                foreach ($email_queue as $index=>$queue){
-                    if($email_sent_total < 100 && !$this->hasQueueExpired($queue,$index) && $queue['deactivated'] != 1) {
-                        if( $this->sendToday($queue)){
-                            error_log("scheduledemails PID: ".$project_id." - Has queued emails to send today ".date("Y-m-d H:i:s"));
-                            #SEND EMAIL
-                            $email_sent = $this->sendQueuedEmail($queue['project_id'],$queue['record'],$queue['alert'],$queue['instrument'],$queue['instance'],$queue['isRepeatInstrument'],$queue['event_id']);
-                            #If email sent save date and number of times sent and delete queue if needed
-                            if($email_sent){
-                                $queue_aux[$index]['last_sent'] = date('Y-m-d');
-                                $queue_aux[$index]['times_sent'] = $queue['times_sent'] + 1;
-                                $this->setProjectSetting('email-queue', $queue_aux,$queue['project_id']);
-                                $email_sent_total++;
+            if($project_id != "") {
+                $email_queue = $this->getProjectSetting('email-queue', $project_id);
+                $queue_aux = $email_queue;
+                if ($email_queue != '') {
+                    $email_sent_total = 0;
+                    foreach ($email_queue as $index => $queue) {
+                        if ($email_sent_total < 100 && !$this->hasQueueExpired($queue, $index) && $queue['deactivated'] != 1) {
+                            if ($this->sendToday($queue)) {
+                                error_log("scheduledemails PID: " . $project_id . " - Has queued emails to send today " . date("Y-m-d H:i:s"));
+                                #SEND EMAIL
+                                $email_sent = $this->sendQueuedEmail($queue['project_id'], $queue['record'], $queue['alert'], $queue['instrument'], $queue['instance'], $queue['isRepeatInstrument'], $queue['event_id']);
+                                #If email sent save date and number of times sent and delete queue if needed
+                                if ($email_sent) {
+                                    $queue_aux[$index]['last_sent'] = date('Y-m-d');
+                                    $queue_aux[$index]['times_sent'] = $queue['times_sent'] + 1;
+                                    $this->setProjectSetting('email-queue', $queue_aux, $queue['project_id']);
+                                    $email_sent_total++;
+                                }
+                                #Check if we need to delete the queue
+                                $this->stopRepeat($queue, $index);
                             }
-                            #Check if we need to delete the queue
-                            $this->stopRepeat($queue,$index);
                         }
                     }
                 }
@@ -403,6 +405,7 @@ class EmailTriggerExternalModule extends AbstractExternalModule
         $cron_repeat_for = $this->getProjectSetting('cron-repeat-for',$queue['project_id'])[$queue['alert']];
         if($cron_repeat_for == "" || $cron_repeat_for == "0" && $queue['last_sent'] != ""){
             $this->deleteQueuedEmail($index, $queue['project_id']);
+            error_log("scheduledemails PID: " . $queue['project_id'] . " - Alert # ".$queue['alert']." Queue #".$index." stop repeat. Delete.");
         }
     }
 
@@ -419,8 +422,9 @@ class EmailTriggerExternalModule extends AbstractExternalModule
         $cron_repeat_for = $this->getProjectSetting('cron-repeat-for',$queue['project_id'])[$queue['alert']];
 
         #If the repeat is 0 we delete regardless of the expiration option
-        if($cron_repeat_for == "" || $cron_repeat_for == "0" && $queue['last_sent'] != ""){
+        if(($cron_repeat_for == "" || $cron_repeat_for == "0") && $queue['last_sent'] != ""){
             $this->deleteQueuedEmail($index, $queue['project_id']);
+            error_log("scheduledemails PID: " . $queue['project_id'] . " - Alert # ".$queue['alert']." Queue #".$index." expired. Delete.");
             return true;
         }
 
@@ -433,11 +437,13 @@ class EmailTriggerExternalModule extends AbstractExternalModule
             if ($cron_queue_expiration_date == 'date' && $cron_queue_expiration_date_field != "") {
                 if (strtotime($cron_queue_expiration_date_field) <= strtotime(date('Y-m-d'))) {
                     $this->deleteQueuedEmail($index, $queue['project_id']);
+                    error_log("scheduledemails PID: " . $queue['project_id'] . " - Alert # ".$queue['alert']." Queue #".$index." expired date. Delete.");
                     return true;
                 }
             }else if ($cron_queue_expiration_date == 'cond' && $cron_queue_expiration_date_field != "") {
                 if ($evaluateLogic) {
                     $this->deleteQueuedEmail($index, $queue['project_id']);
+                    error_log("scheduledemails PID: " . $queue['project_id'] . " - Alert # ".$queue['alert']." Queue #".$index." expired condition. Delete.");
                     return true;
                 }
             }
@@ -611,7 +617,7 @@ class EmailTriggerExternalModule extends AbstractExternalModule
         $email_text = $this->setSurveyLink($email_text, $project_id, $record, $event_id, $isLongitudinal);
         $email_text = $this->setFormLink($email_text, $project_id, $record, $event_id, $isLongitudinal);
 
-        $mail = new \PHPMailer;
+        $mail = new PHPMailer;
         #Enable debug messages
         $mail->SMTPDebug = 3;
 
